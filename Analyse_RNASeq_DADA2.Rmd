@@ -1,0 +1,127 @@
+---
+title: "ANALYSE MICROBIOME 16S rDNADE DE CHIEN AVEC DADA2"
+author: "Serigne Fallou Mbacke NGOM"
+date: "2023-08-02"
+output: html_document
+---
+
+### DADA2	workflow:	
+
+***Raw	FASTQ	files***  ----> ***Sort	F	and	R	reads*** ---> ***Quality inspection*** ---> ***Error	rate	estimation*** ---> ***Sample	inference*** ---> ***Merge	reads*** ----> ***Chimera	checking	and	removal*** ---> ***Assignment	taxonomy	&	phylogeny*** ----> ***Diversity	analysis	and	visualization***
+
+### IMPORTATION DES DONNEES:
+```{r, echo=FALSE}
+library(dada2)
+```
+```{r}
+path <- "D:/16S FASTQ"
+list.files(path)
+```
+
+### TRIER LES READS & EXTAIRE LE NOM DES ECHANTILLONS:
+```{r}
+fnFs <- sort(list.files(path, pattern="_R1.fastq", full.names = TRUE))  # forward ou sens
+fnRs <- sort(list.files(path, pattern="_R2.fastq", full.names = TRUE))  # reverse ou antisens
+
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)  
+print(sample.names)
+```
+
+### CONTROLE QUALITE: 
+```{r, warning=FALSE}
+plotQualityProfile(fnFs[1:3])   # forward ou sens
+plotQualityProfile(fnFs[4:6])   # reverse ou antisens
+```
+Pour les reads fowards, le score qualite est bonne. Cependant, il diminue progressivement a partir du 290ieme nucleotide.
+
+Pour les reads reverse, le score qualite est bonne. Cependant, il diminue progressivement a partir du 275ieme nucleotide.
+
+### FILTRER ET TAILLER LES READS:
+Nous allons couper a partir du 290ieme nucleotide pour les foward et 275ieme nucleotide pour reverse.
+```{r, warning=FALSE}
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(290,275), # coupure des reads, trimming
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE) 
+
+head(out)
+```
+
+### EVALUATION TAUX D'ERREUR:
+```{r, echo=FALSE}
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+```{r, warning=FALSE}
+plotErrors(errF, nominalQ=TRUE)
+plotErrors(errR, nominalQ=TRUE)
+```
+Nous constatons que lorsque le score qualite augmente, le taux d'erreur diminue.
+
+### INFERENCE DES ECHANTILLONS:
+```{r}
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)  # recuperer les sequences foward uniques 
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)  # recuperer les sequences reverse uniques 
+```
+
+### MERGER LES READS:
+```{r}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+head(mergers[[1]])   # inspecter les donnees mergees  pour la premiere sequence
+```
+
+### Construction table ASV (Amplicon Sequence Variant):
+```{r}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+table(nchar(getSequences(seqtab)))  # inspecter la distibution des longeurs des sequences
+```
+
+
+### Enlever les sequences chimeriques:
+Les sequences chimeriques sont issues de la jonction entre deux(2) ou plusieurs sequences.
+Des amplicons chimeriques peuvent se former au cours de la reaction de PCR.
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+sum(seqtab.nochim)/sum(seqtab)
+```
+
+### SUIVRE L'EVOLUTION DES DONNEES AU COURS DE L'ANALYSE:
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+
+### ASSIGNATION TAXONOMIES:
+```{r}
+taxa <- assignTaxonomy(seqtab.nochim, "D:/silva_nr_v128_train_set.fa", multithread=TRUE)
+taxa.print <- taxa   
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+```{r}
+taxa.print <- taxa
+rownames(taxa.print) <- NULL
+write.csv2(taxa.print, file = "ASVs_taxonomy.csv")
+saveRDS(taxa, "ASVs_taxonomy.rds")
+```
+
+```{r}
+taxa.print = data.frame(taxa.print)
+count.asv.tab = t(seqtab.nochim)
+row.names(count.asv.tab) = taxa.print$Genus
+count.asv.tab = t(count.asv.tab)
+write.csv2(count.asv.tab, file = "ASVs_counts.csv")
+```
+```{r}
+
+```
+
